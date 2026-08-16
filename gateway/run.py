@@ -7809,6 +7809,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     runtime_kwargs = dict(runtime_kwargs or {})
                     runtime_kwargs["provider"] = _decision.provider
                     runtime_kwargs["requested_provider"] = _decision.provider
+                    # 重新解析目标 provider 的完整凭据,避免 key/URL 不匹配
+                    try:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        _rt = resolve_runtime_provider(
+                            requested=_decision.provider,
+                            target_model=_decision.model,
+                        )
+                        if _rt:
+                            for k in ("api_key", "base_url", "api_mode", "command", "credential_pool"):
+                                if _rt.get(k):
+                                    runtime_kwargs[k] = _rt[k]
+                            if _rt.get("args"):
+                                runtime_kwargs["args"] = list(_rt["args"])
+                    except Exception:
+                        pass
         except Exception:
             pass  # 路由失败绝不影响正常执行
 

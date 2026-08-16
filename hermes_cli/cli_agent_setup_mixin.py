@@ -298,6 +298,40 @@ class CLIAgentSetupMixin:
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # [model_routing 钩子] 每轮按用户消息特征选模型(未显式指定时)
+        # 命中 → 覆盖 model + 重新解析目标 provider 的完整 runtime(api_key/base_url/api_mode)
+        # 异常/未启用 → 原样走,绝不破坏会话
+        try:
+            from hermes_cli.model_routing import ModelRouter
+            from hermes_cli.config import load_config
+
+            _cfg = load_config()
+            _routing = _cfg.get("model_routing") if isinstance(_cfg, dict) else None
+            if _routing and _routing.get("enabled") and user_message:
+                _router = ModelRouter(_routing)
+                _decision = _router.route(user_message)
+                if _decision.matched_rule and _decision.provider:
+                    # 重新解析目标 provider 的完整凭据(避免"只改 provider 名,key/URL 还是旧的")
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    _rt = resolve_runtime_provider(
+                        requested=_decision.provider,
+                        target_model=_decision.model,
+                    )
+                    self.model = _decision.model
+                    self.provider = _decision.provider
+                    self.requested_provider = _decision.provider
+                    if _rt:
+                        self.api_key = _rt.get("api_key") or self.api_key
+                        self.base_url = _rt.get("base_url") or self.base_url
+                        self.api_mode = _rt.get("api_mode") or self.api_mode
+                        if _rt.get("command"):
+                            self.acp_command = _rt["command"]
+                            self.acp_args = list(_rt.get("args") or [])
+                        if _rt.get("credential_pool"):
+                            self._credential_pool = _rt["credential_pool"]
+        except Exception:
+            pass  # 路由失败绝不影响正常执行
+
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
