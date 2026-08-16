@@ -1721,6 +1721,7 @@ def resolve_runtime_provider(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
+    route_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution.
 
@@ -1733,6 +1734,18 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+
+    # [model_routing 钩子] 路由:未显式指定 provider 且有消息文本时,按特征选模型
+    # 显式指定(用户 /model、API body 带 model)→ 跳过路由(显式 > 自动)
+    # 路由异常/未启用 → 返回 None 走原逻辑,绝不破坏会话
+    if not requested and target_model is None and route_text:
+        try:
+            _route = _apply_model_routing(route_text)
+            if _route:
+                requested, target_model = _route
+                requested_provider = resolve_requested_provider(requested)
+        except Exception:
+            pass  # 路由失败绝不影响正常执行
 
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
     # custom providers and the built-in ones (openai / anthropic /
@@ -2349,3 +2362,32 @@ def format_runtime_provider_error(error: Exception) -> str:
     if isinstance(error, AuthError):
         return format_auth_error(error)
     return str(error)
+
+
+# ---------------------------------------------------------------------------
+# model_routing 钩子(A 方案 Phase 1)
+# ---------------------------------------------------------------------------
+
+def _apply_model_routing(route_text: str):
+    """按消息特征选模型(未显式指定 provider 时)。
+
+    读取 config 的 model_routing 段;启用时对输入文本做启发式路由。
+    返回 (provider, model) 或 None(未启用/未命中/异常)。
+    """
+    try:
+        from hermes_cli.model_routing import ModelRouter
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        routing_cfg = cfg.get("model_routing") if isinstance(cfg, dict) else None
+        if not routing_cfg or not routing_cfg.get("enabled"):
+            return None
+
+        router = ModelRouter(routing_cfg)
+        decision = router.route(route_text or "")
+        if decision.matched_rule and decision.provider:
+            return (decision.provider, decision.model)
+        return None
+    except Exception:
+        return None  # 路由失败绝不影响正常执行
+

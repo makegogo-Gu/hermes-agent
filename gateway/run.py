@@ -7793,6 +7793,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # [model_routing 钩子] 每轮按用户消息特征选模型(未显式指定时)
+        # 路由命中 → 覆盖 model 与 runtime provider;异常/未启用 → 原样
+        try:
+            from hermes_cli.model_routing import ModelRouter
+            from hermes_cli.config import load_config
+
+            _cfg = load_config()
+            _routing = _cfg.get("model_routing") if isinstance(_cfg, dict) else None
+            if _routing and _routing.get("enabled") and user_message:
+                _router = ModelRouter(_routing)
+                _decision = _router.route(user_message)
+                if _decision.matched_rule and _decision.provider:
+                    model = _decision.model
+                    runtime_kwargs = dict(runtime_kwargs or {})
+                    runtime_kwargs["provider"] = _decision.provider
+                    runtime_kwargs["requested_provider"] = _decision.provider
+        except Exception:
+            pass  # 路由失败绝不影响正常执行
+
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
