@@ -224,8 +224,9 @@ class ModelRouter:
 
     def _log_decision(self, d: RouteDecision, feats_text: str) -> None:
         """记录决策(内存 log + 可选 stats 文件)。"""
+        import time
         entry = {
-            "ts": None,  # 调用方注入时间戳(保持纯逻辑无依赖)
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),  # 自动时间戳(不依赖调用方)
             "rule": d.matched_rule,
             "provider": d.provider,
             "model": d.model,
