@@ -99,6 +99,8 @@ class ModelRouter:
         self.log_level = config.get("log_level", "info")
         self.stats_file = config.get("stats_file")
         self._log = logger or log
+        # 增强层(routing_enhance.RoutingEnhancer), 默认 None = 完全向后兼容
+        self.enhancer = None
 
         # 校验
         if self.enabled and not self.rules and not self.capabilities:
@@ -106,10 +108,39 @@ class ModelRouter:
 
     # -- 入口 ------------------------------------------------------------
 
-    def route(self, message: str, *, capabilities: Optional[List[str]] = None) -> RouteDecision:
-        """对一条用户消息做路由决策。"""
+    def route(self, message: str, *, capabilities: Optional[List[str]] = None,
+              session_id: str = "", has_images: bool = False,
+              is_tool_result: bool = False, is_subagent: bool = False,
+              current_model: str = "") -> RouteDecision:
+        """对一条用户消息做路由决策。
+
+        增强层(routing_enhance): 若配置了 enhancer, 在规则评估前做 gate:
+          - 确认轮/工具结果/探针 → 沿用当前模型(不路由, 治误判根因)
+          - 含图/复杂度信号 → force_main(不降级到简单模型)
+        未配置 enhancer 时完全向后兼容(原 heuristic 行为不变)。
+        """
         if not self.enabled:
             return self._default_decision("routing_disabled", message)
+
+        # 增强层 gate(可选)
+        if self.enhancer is not None:
+            enh = self.enhancer.check(
+                message, session_id=session_id, has_images=has_images,
+                is_tool_result=is_tool_result, is_subagent=is_subagent,
+                current_model=current_model)
+            if enh.should_skip:
+                # 沿用当前模型(若有), 否则保守 default
+                if current_model:
+                    return RouteDecision(
+                        matched_rule=None, provider=self.default.get("provider", ""),
+                        model=current_model, reason=f"增强层跳过路由: {enh.skip_reason}",
+                        evaluated=["routing_enhance:skip"])
+                return self._default_decision(f"enh skip: {enh.skip_reason}", message)
+            if enh.force_main:
+                # 含图/复杂度 → 强制主模型, 不降级
+                self._log.info("增强层 force_main: %s", enh.force_reason)
+                return self._default_decision(f"enh main: {enh.force_reason}", message,
+                                              evaluated=["routing_enhance:force_main"])
 
         feats = MessageFeatures.extract(message)
         evaluated: List[str] = []
